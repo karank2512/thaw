@@ -136,3 +136,16 @@ docs/READING.md
 docs/RELEASING.md
 docs/notes/
 .claude/
+# ============================================================================
+# Local scratch / large media — kept out of the repo (use a release or the
+# site's own assets for anything that needs to be public).
+# ============================================================================
+*.mp4
+*.Rhistory
+/thaw demo videos/
+# arXiv submission bundle — generated/local, may contain pre-publication scratch.
+paper/refeed-drift/arxiv-upload/
+# codebase-memory-mcp index — local, regenerated per machine via index_repository
+# (1.8 MB binary that changes on every re-index). Commit it instead if you want
+# teammates to bootstrap the graph without re-indexing.
+.codebase-memory/

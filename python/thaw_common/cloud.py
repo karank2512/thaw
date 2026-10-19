@@ -21,14 +21,16 @@ Throughput:
     single S3 key is server-throttled to ~135 MB/s regardless of how many
     concurrent ranges you issue (flat 8→256 conc., measured EC2 intra-region;
     see docs/ARCHITECTURE.md). Ranged concurrency mainly hides per-request
-    latency and TLS/connection warm-up, not raw single-key bandwidth.
+    per-request latency, not raw single-key bandwidth.
   - Many objects: the real bandwidth lever is fanning out across DISTINCT
-    keys — each key has its own ~135 MB/s budget, so N keys in parallel give
-    ~N×135 MB/s. resolve_snapshots/upload_snapshots provide that fan-out; it
-    is also the read side of the "shard at freeze time" plan in ARCHITECTURE.
+    keys — each key has its own ~135 MB/s ceiling, so throughput should scale
+    toward ~N×135 MB/s across N keys (projected from the single-key ceiling,
+    not yet measured end to end). resolve_snapshots/upload_snapshots provide
+    that fan-out; it is also the read side of the "shard at freeze time"
+    plan in ARCHITECTURE.
   - Client reuse: the boto3 client is built once per process and cached
-    (see _s3_client), so repeated transfers keep credentials resolved and
-    TCP/TLS connections warm instead of paying a fresh handshake each time.
+    (see _s3_client), so repeated transfers skip credential resolution and
+    client construction.
   - Tunables: THAW_S3_CONCURRENCY (per-file ranged GETs, default 32),
     THAW_S3_FILE_CONCURRENCY (cross-file fan-out, default 8),
     THAW_S3_PART_SIZE_MB (default 16), THAW_S3_MULTIPART_THRESHOLD_MB
@@ -81,9 +83,8 @@ _DEFAULT_READ_CHUNK = 4 * 1024 * 1024  # how much body.read() returns per call
 # parallel — the win for a many-object corpus (RAG chunks, per-rank shards,
 # weights + KV sidecar) where each object is small enough that per-file
 # ranged concurrency doesn't help. Total concurrent S3 requests are still
-# capped by the shared client's connection pool (see _s3_client), so this is
-# bounded, not unbounded fan-out. Default 8: enough to hide per-object
-# request latency without risking per-prefix throttling.
+# limited by the size of the shared client's connection pool (see _s3_client).
+# Default 8; not tuned against real S3 yet.
 _DEFAULT_FILE_CONCURRENCY = _env_int("THAW_S3_FILE_CONCURRENCY", 8)
 
 
@@ -183,9 +184,9 @@ def resolve_snapshots(
 
     The difference is that independent remote objects download concurrently
     with a bounded thread pool (THAW_S3_FILE_CONCURRENCY, default 8, override
-    per-call with `max_files`), reusing the shared cached S3 client. A corpus
-    of N objects then costs ~max(per-object latency) instead of ~sum, while
-    total in-flight S3 requests stay bounded by the client connection pool.
+    per-call with `max_files`), reusing the shared cached S3 client. When
+    N <= max_files, a corpus of N objects costs ~max(per-object latency)
+    instead of ~sum.
 
     Returns local paths in the SAME ORDER as `uris`. If any download fails,
     the first error is re-raised after the other in-flight transfers settle;
@@ -193,8 +194,9 @@ def resolve_snapshots(
     download never leaves a partial object in the cache.
 
     Note: for a batch of many LARGE objects, per-file ranged concurrency
-    (THAW_S3_CONCURRENCY) and file concurrency multiply; the shared client's
-    connection pool is the hard global bound. Tune both knobs to your NIC.
+    (THAW_S3_CONCURRENCY) and file concurrency multiply (8 x 32 = 256), while
+    the shared client's pool is much smaller, so the pool is the practical
+    limit on warm connections. Sizing it for files x per-file is future work.
     """
     uris = list(uris)
     results: List[Optional[str]] = [None] * len(uris)
@@ -312,12 +314,11 @@ def _parse_s3(uri: str):
 #
 # Building a boto3 client is not free: it resolves the credential provider
 # chain (which can issue an IMDS network round-trip on an EC2/pod role),
-# loads the S3 service model, and resolves the endpoint — ~3 ms warm and
-# hundreds of ms cold. More importantly, a *fresh* client starts with an
-# *empty* connection pool, so the first request on it pays a new TCP+TLS
-# handshake to S3 instead of reusing a warm keep-alive connection. The
+# loads the S3 service model, and resolves the endpoint (measured ~3 ms per
+# op on a laptop under moto; see site/receipts/2026-06-24_s3_batch.json). The
 # previous implementation built a new client on every download and every
-# upload, throwing that warmth away each time.
+# upload. A fresh client also starts with an empty connection pool, so reuse
+# should save a TCP+TLS handshake on real S3; that part is not measured.
 #
 # We cache one client per process, keyed by (pid, pool_size):
 #   - pid: botocore clients are NOT fork-safe. vLLM spawns/forks TP worker
@@ -359,8 +360,8 @@ def _s3_client(concurrency: int = _DEFAULT_CONCURRENCY):
     botocore's default pool is 10; undersized pools serialize concurrent GETs,
     so we size it to ``concurrency + 4`` (minimum 16) — identical to the pool
     the previous per-call implementation used. The client is then cached and
-    reused so repeated downloads/uploads keep credentials resolved and TCP/TLS
-    connections warm. See the module-level note for the (pid, pool_size) key
+    reused so repeated downloads/uploads skip credential resolution and client
+    construction. See the module-level note for the (pid, pool_size) key
     and fork/thread-safety rationale.
     """
     pool_size = max(concurrency + 4, 16)

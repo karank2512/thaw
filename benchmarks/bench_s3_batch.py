@@ -11,9 +11,9 @@ laptop in seconds:
     upload. Building a client resolves credentials (an IMDS round-trip on a
     pod role), loads the S3 service model, and — the part that bites on a
     real network — starts with an EMPTY connection pool, so the first request
-    pays a fresh TCP+TLS handshake. We measure the construction overhead saved
-    per operation. The connection-reuse half of the win only shows up against
-    real S3 (no sockets under moto); see --help for the real-S3 recipe.
+    should pay a fresh TCP+TLS handshake. We measure only the construction
+    overhead saved per operation. Connection reuse is not measured here (no
+    sockets under moto); see --help for the real-S3 recipe.
 
   Part B — bounded-concurrency batch transfers
     The old code had no many-object API; a corpus was resolved one file at a
@@ -43,7 +43,7 @@ import os
 import statistics
 import sys
 import time
-from typing import List, Optional
+from typing import List
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
@@ -100,9 +100,8 @@ def bench_client_reuse(cloud, ops: int, repeats: int) -> dict:
         "cached_total_ms": round(cached_total * 1000, 2),
         "construction_ms_saved_total": round((build_total - cached_total) * 1000, 2),
         "note": (
-            "Construction overhead only. On real S3 each rebuilt client also "
-            "pays a fresh TCP+TLS handshake on its first request; reuse keeps "
-            "keep-alive connections warm across operations."
+            "Construction overhead only. Connection reuse is not measured "
+            "(moto opens no sockets)."
         ),
     }
 
@@ -181,7 +180,7 @@ def main():
     print(f"  cached       : {a['cached_per_op_ms']:.4f} ms/op  "
           f"({a['cached_total_ms']:.1f} ms for {a['ops']} ops)")
     print(f"  construction saved over {a['ops']} ops: {a['construction_ms_saved_total']:.1f} ms "
-          f"(+ one fewer TCP/TLS handshake per op on real S3)")
+          f"(construction only; connection reuse not measured)")
 
     print("\n── Part B: bounded-concurrency batch ──")
     part_b = []
@@ -200,7 +199,7 @@ def main():
             "python": sys.version.split()[0],
             "part_a_client_reuse": a,
             "part_b_batch_concurrency": part_b,
-            "params": vars(args),
+            "params": {k: v for k, v in vars(args).items() if k != "json_out"},
         }
         os.makedirs(os.path.dirname(args.json_out) or ".", exist_ok=True)
         with open(args.json_out, "w") as f:

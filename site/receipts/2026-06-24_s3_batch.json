@@ -108,7 +108,6 @@
     ],
     "latency_ms": 40.0,
     "reuse_ops": 200,
-    "repeats": 5,
-    "json_out": "C:\\Users\\kkapu\\OneDrive\\Desktop\\thaw\\site\\receipts\\2026-06-24_s3_batch.json"
+    "repeats": 5
   }
 }
