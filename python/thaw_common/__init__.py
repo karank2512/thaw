@@ -66,4 +66,7 @@ __all__ = [
     "resolve_snapshots",
     "upload_snapshot",
     "upload_snapshots",
+    "fallback_warning",
+    "strict_mode",
+    "check_pinned",
 ]
